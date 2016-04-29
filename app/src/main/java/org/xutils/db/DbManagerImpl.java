@@ -18,7 +18,7 @@ package org.xutils.db;
 import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
 import android.database.sqlite.SQLiteStatement;
-import android.text.TextUtils;
+import android.os.Build;
 
 import org.xutils.DbManager;
 import org.xutils.common.util.IOUtil;
@@ -28,6 +28,7 @@ import org.xutils.db.sqlite.SqlInfo;
 import org.xutils.db.sqlite.SqlInfoBuilder;
 import org.xutils.db.sqlite.WhereBuilder;
 import org.xutils.db.table.ColumnEntity;
+import org.xutils.db.table.DbBase;
 import org.xutils.db.table.DbModel;
 import org.xutils.db.table.TableEntity;
 import org.xutils.ex.DbException;
@@ -39,14 +40,14 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 
-public final class DbManagerImpl implements DbManager {
+public final class DbManagerImpl extends DbBase {
 
     //*************************************** create instance ****************************************************
 
     /**
      * key: dbName
      */
-    private static HashMap<DaoConfig, DbManagerImpl> daoMap = new HashMap<DaoConfig, DbManagerImpl>();
+    private final static HashMap<DaoConfig, DbManagerImpl> DAO_MAP = new HashMap<DaoConfig, DbManagerImpl>();
 
     private SQLiteDatabase database;
     private DaoConfig daoConfig;
@@ -56,9 +57,13 @@ public final class DbManagerImpl implements DbManager {
         if (config == null) {
             throw new IllegalArgumentException("daoConfig may not be null");
         }
-        this.database = createDatabase(config);
         this.daoConfig = config;
         this.allowTransaction = config.isAllowTransaction();
+        this.database = openOrCreateDatabase(config);
+        DbOpenListener dbOpenListener = config.getDbOpenListener();
+        if (dbOpenListener != null) {
+            dbOpenListener.onDbOpened(this);
+        }
     }
 
     public synchronized static DbManager getInstance(DaoConfig daoConfig) {
@@ -67,10 +72,10 @@ public final class DbManagerImpl implements DbManager {
             daoConfig = new DaoConfig();
         }
 
-        DbManagerImpl dao = daoMap.get(daoConfig);
+        DbManagerImpl dao = DAO_MAP.get(daoConfig);
         if (dao == null) {
             dao = new DbManagerImpl(daoConfig);
-            daoMap.put(daoConfig, dao);
+            DAO_MAP.put(daoConfig, dao);
         } else {
             dao.daoConfig = daoConfig;
         }
@@ -118,13 +123,13 @@ public final class DbManagerImpl implements DbManager {
             if (entity instanceof List) {
                 List<?> entities = (List<?>) entity;
                 if (entities.isEmpty()) return;
-                TableEntity<?> table = TableEntity.get(this, entities.get(0).getClass());
+                TableEntity<?> table = this.getTable(entities.get(0).getClass());
                 createTableIfNotExist(table);
                 for (Object item : entities) {
                     saveOrUpdateWithoutTransaction(table, item);
                 }
             } else {
-                TableEntity<?> table = TableEntity.get(this, entity.getClass());
+                TableEntity<?> table = this.getTable(entity.getClass());
                 createTableIfNotExist(table);
                 saveOrUpdateWithoutTransaction(table, entity);
             }
@@ -143,13 +148,13 @@ public final class DbManagerImpl implements DbManager {
             if (entity instanceof List) {
                 List<?> entities = (List<?>) entity;
                 if (entities.isEmpty()) return;
-                TableEntity<?> table = TableEntity.get(this, entities.get(0).getClass());
+                TableEntity<?> table = this.getTable(entities.get(0).getClass());
                 createTableIfNotExist(table);
                 for (Object item : entities) {
                     execNonQuery(SqlInfoBuilder.buildReplaceSqlInfo(table, item));
                 }
             } else {
-                TableEntity<?> table = TableEntity.get(this, entity.getClass());
+                TableEntity<?> table = this.getTable(entity.getClass());
                 createTableIfNotExist(table);
                 execNonQuery(SqlInfoBuilder.buildReplaceSqlInfo(table, entity));
             }
@@ -168,13 +173,13 @@ public final class DbManagerImpl implements DbManager {
             if (entity instanceof List) {
                 List<?> entities = (List<?>) entity;
                 if (entities.isEmpty()) return;
-                TableEntity<?> table = TableEntity.get(this, entities.get(0).getClass());
+                TableEntity<?> table = this.getTable(entities.get(0).getClass());
                 createTableIfNotExist(table);
                 for (Object item : entities) {
                     execNonQuery(SqlInfoBuilder.buildInsertSqlInfo(table, item));
                 }
             } else {
-                TableEntity<?> table = TableEntity.get(this, entity.getClass());
+                TableEntity<?> table = this.getTable(entity.getClass());
                 createTableIfNotExist(table);
                 execNonQuery(SqlInfoBuilder.buildInsertSqlInfo(table, entity));
             }
@@ -194,7 +199,7 @@ public final class DbManagerImpl implements DbManager {
             if (entity instanceof List) {
                 List<?> entities = (List<?>) entity;
                 if (entities.isEmpty()) return false;
-                TableEntity<?> table = TableEntity.get(this, entities.get(0).getClass());
+                TableEntity<?> table = this.getTable(entities.get(0).getClass());
                 createTableIfNotExist(table);
                 for (Object item : entities) {
                     if (!saveBindingIdWithoutTransaction(table, item)) {
@@ -202,7 +207,7 @@ public final class DbManagerImpl implements DbManager {
                     }
                 }
             } else {
-                TableEntity<?> table = TableEntity.get(this, entity.getClass());
+                TableEntity<?> table = this.getTable(entity.getClass());
                 createTableIfNotExist(table);
                 result = saveBindingIdWithoutTransaction(table, entity);
             }
@@ -216,7 +221,7 @@ public final class DbManagerImpl implements DbManager {
 
     @Override
     public void deleteById(Class<?> entityType, Object idValue) throws DbException {
-        TableEntity<?> table = TableEntity.get(this, entityType);
+        TableEntity<?> table = this.getTable(entityType);
         if (!table.tableIsExist()) return;
         try {
             beginTransaction();
@@ -237,13 +242,13 @@ public final class DbManagerImpl implements DbManager {
             if (entity instanceof List) {
                 List<?> entities = (List<?>) entity;
                 if (entities.isEmpty()) return;
-                TableEntity<?> table = TableEntity.get(this, entities.get(0).getClass());
+                TableEntity<?> table = this.getTable(entities.get(0).getClass());
                 if (!table.tableIsExist()) return;
                 for (Object item : entities) {
                     execNonQuery(SqlInfoBuilder.buildDeleteSqlInfo(table, item));
                 }
             } else {
-                TableEntity<?> table = TableEntity.get(this, entity.getClass());
+                TableEntity<?> table = this.getTable(entity.getClass());
                 if (!table.tableIsExist()) return;
                 execNonQuery(SqlInfoBuilder.buildDeleteSqlInfo(table, entity));
             }
@@ -261,7 +266,7 @@ public final class DbManagerImpl implements DbManager {
 
     @Override
     public int delete(Class<?> entityType, WhereBuilder whereBuilder) throws DbException {
-        TableEntity<?> table = TableEntity.get(this, entityType);
+        TableEntity<?> table = this.getTable(entityType);
         if (!table.tableIsExist()) return 0;
         int result = 0;
         try {
@@ -284,13 +289,13 @@ public final class DbManagerImpl implements DbManager {
             if (entity instanceof List) {
                 List<?> entities = (List<?>) entity;
                 if (entities.isEmpty()) return;
-                TableEntity<?> table = TableEntity.get(this, entities.get(0).getClass());
+                TableEntity<?> table = this.getTable(entities.get(0).getClass());
                 if (!table.tableIsExist()) return;
                 for (Object item : entities) {
                     execNonQuery(SqlInfoBuilder.buildUpdateSqlInfo(table, item, updateColumnNames));
                 }
             } else {
-                TableEntity<?> table = TableEntity.get(this, entity.getClass());
+                TableEntity<?> table = this.getTable(entity.getClass());
                 if (!table.tableIsExist()) return;
                 execNonQuery(SqlInfoBuilder.buildUpdateSqlInfo(table, entity, updateColumnNames));
             }
@@ -303,7 +308,7 @@ public final class DbManagerImpl implements DbManager {
 
     @Override
     public int update(Class<?> entityType, WhereBuilder whereBuilder, KeyValue... nameValuePairs) throws DbException {
-        TableEntity<?> table = TableEntity.get(this, entityType);
+        TableEntity<?> table = this.getTable(entityType);
         if (!table.tableIsExist()) return 0;
 
         int result = 0;
@@ -323,7 +328,7 @@ public final class DbManagerImpl implements DbManager {
     @Override
     @SuppressWarnings("unchecked")
     public <T> T findById(Class<T> entityType, Object idValue) throws DbException {
-        TableEntity<T> table = TableEntity.get(this, entityType);
+        TableEntity<T> table = this.getTable(entityType);
         if (!table.tableIsExist()) return null;
 
         Selector selector = Selector.from(table).where(table.getId().getName(), "=", idValue);
@@ -356,7 +361,7 @@ public final class DbManagerImpl implements DbManager {
 
     @Override
     public <T> Selector<T> selector(Class<T> entityType) throws DbException {
-        return Selector.from(TableEntity.get(this, entityType));
+        return Selector.from(this.getTable(entityType));
     }
 
     @Override
@@ -397,7 +402,7 @@ public final class DbManagerImpl implements DbManager {
 
     //******************************************** config ******************************************************
 
-    private SQLiteDatabase createDatabase(DaoConfig config) {
+    private SQLiteDatabase openOrCreateDatabase(DaoConfig config) {
         SQLiteDatabase result = null;
 
         File dbDir = config.getDbDir();
@@ -459,83 +464,10 @@ public final class DbManagerImpl implements DbManager {
         return id;
     }
 
-    private void createTableIfNotExist(TableEntity<?> table) throws DbException {
-        if (!table.tableIsExist()) {
-            synchronized (table.getClass()) {
-                if (!table.tableIsExist()) {
-                    SqlInfo sqlInfo = SqlInfoBuilder.buildCreateTableSqlInfo(table);
-                    execNonQuery(sqlInfo);
-                    String execAfterTableCreated = table.getOnCreated();
-                    if (!TextUtils.isEmpty(execAfterTableCreated)) {
-                        execNonQuery(execAfterTableCreated);
-                    }
-                    table.setCheckedDatabase(true);
-                    TableCreateListener listener = this.daoConfig.getTableCreateListener();
-                    if (listener != null) {
-                        listener.onTableCreated(this, table);
-                    }
-                }
-            }
-        }
-    }
-
-    @Override
-    public void dropTable(Class<?> entityType) throws DbException {
-        TableEntity<?> table = TableEntity.get(this, entityType);
-        if (!table.tableIsExist()) return;
-        execNonQuery("DROP TABLE \"" + table.getName() + "\"");
-        TableEntity.remove(this, entityType);
-    }
-
-    @Override
-    public void addColumn(Class<?> entityType, String column) throws DbException {
-        try {
-            beginTransaction();
-            TableEntity.remove(this, entityType);
-            TableEntity<?> table = TableEntity.get(this, entityType);
-            ColumnEntity col = table.getColumnMap().get(column);
-            if (col != null) {
-                StringBuilder builder = new StringBuilder();
-                builder.append("ALTER TABLE ").append("\"").append(table.getName()).append("\"").
-                        append(" ADD COLUMN ").append("\"").append(col.getName()).append("\"").
-                        append(" ").append(col.getColumnDbType()).
-                        append(" ").append(col.getProperty());
-                execNonQuery(builder.toString());
-            }
-            table.setCheckedDatabase(true);
-            setTransactionSuccessful();
-        } finally {
-            endTransaction();
-        }
-    }
-
-    @Override
-    public void dropDb() throws DbException {
-        Cursor cursor = execQuery("SELECT name FROM sqlite_master WHERE type='table' AND name<>'sqlite_sequence'");
-        if (cursor != null) {
-            try {
-                while (cursor.moveToNext()) {
-                    try {
-                        String tableName = cursor.getString(0);
-                        execNonQuery("DROP TABLE " + tableName);
-                        TableEntity.remove(this, tableName);
-                    } catch (Throwable e) {
-                        LogUtil.e(e.getMessage(), e);
-                    }
-                }
-
-            } catch (Throwable e) {
-                throw new DbException(e);
-            } finally {
-                IOUtil.closeQuietly(cursor);
-            }
-        }
-    }
-
     @Override
     public void close() throws IOException {
-        if (daoMap.containsKey(daoConfig)) {
-            daoMap.remove(daoConfig);
+        if (DAO_MAP.containsKey(daoConfig)) {
+            DAO_MAP.remove(daoConfig);
             this.database.close();
         }
     }
@@ -544,7 +476,11 @@ public final class DbManagerImpl implements DbManager {
 
     private void beginTransaction() {
         if (allowTransaction) {
-            database.beginTransaction();
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN && database.isWriteAheadLoggingEnabled()) {
+                database.beginTransactionNonExclusive();
+            } else {
+                database.beginTransaction();
+            }
         }
     }
 

@@ -10,8 +10,14 @@ import org.xutils.ex.DbException;
  */
 public enum DbConfigs {
     HTTP(new DbManager.DaoConfig()
-            .setDbName(XConfig.DEFAULT_HTTP_CACHE_DB)//"xUtils_http_cache.db")
+            .setDbName("xUtils_http_cache.db")
             .setDbVersion(1)
+            .setDbOpenListener(new DbManager.DbOpenListener() {
+                @Override
+                public void onDbOpened(DbManager db) {
+                    db.getDatabase().enableWriteAheadLogging();
+                }
+            })
             .setDbUpgradeListener(new DbManager.DbUpgradeListener() {
                 @Override
                 public void onUpgrade(DbManager db, int oldVersion, int newVersion) {
@@ -24,8 +30,14 @@ public enum DbConfigs {
             })),
 
     COOKIE(new DbManager.DaoConfig()
-            .setDbName(XConfig.DEFAULT_HTTP_COOKIE_CACHE_DB)//"xUtils_http_cookie.db")
+            .setDbName("xUtils_http_cookie.db")
             .setDbVersion(1)
+            .setDbOpenListener(new DbManager.DbOpenListener() {
+                @Override
+                public void onDbOpened(DbManager db) {
+                    db.getDatabase().enableWriteAheadLogging();
+                }
+            })
             .setDbUpgradeListener(new DbManager.DbUpgradeListener() {
                 @Override
                 public void onUpgrade(DbManager db, int oldVersion, int newVersion) {

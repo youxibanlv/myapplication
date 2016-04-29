@@ -19,10 +19,12 @@ import org.xutils.http.cookie.DbCookieStore;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.lang.reflect.Field;
 import java.lang.reflect.Type;
 import java.net.CookieManager;
 import java.net.CookiePolicy;
 import java.net.HttpURLConnection;
+import java.net.ProtocolException;
 import java.net.Proxy;
 import java.net.URL;
 import java.net.URLDecoder;
@@ -113,8 +115,9 @@ public class HttpRequest extends UriRequest {
      */
     @Override
     @TargetApi(Build.VERSION_CODES.KITKAT)
-    public void sendRequest() throws IOException {
+    public void sendRequest() throws Throwable {
         isLoading = false;
+        responseCode = 0;
 
         URL url = new URL(queryUrl);
         { // init connection
@@ -171,9 +174,24 @@ public class HttpRequest extends UriRequest {
             }
         }
 
+        // intercept response
+        if (requestInterceptListener != null) {
+            requestInterceptListener.beforeRequest(this);
+        }
+
         { // write body
             HttpMethod method = params.getMethod();
-            connection.setRequestMethod(method.toString());
+            try {
+                connection.setRequestMethod(method.toString());
+            } catch (ProtocolException ex) {
+                try { // fix: HttpURLConnection not support PATCH method.
+                    Field methodField = HttpURLConnection.class.getDeclaredField("method");
+                    methodField.setAccessible(true);
+                    methodField.set(connection, method.toString());
+                } catch (Throwable ignored) {
+                    throw ex;
+                }
+            }
             if (HttpMethod.permitsRequestBody(method)) {
                 RequestBody body = params.getRequestBody();
                 if (body != null) {
@@ -216,7 +234,13 @@ public class HttpRequest extends UriRequest {
 
         // check response code
         responseCode = connection.getResponseCode();
-        if (responseCode >= 300) {
+        // intercept response
+        if (requestInterceptListener != null) {
+            requestInterceptListener.afterRequest(this);
+        }
+        if (responseCode == 204 || responseCode == 205) { // empty content
+            throw new HttpException(responseCode, this.getResponseMessage());
+        } else if (responseCode >= 300) {
             HttpException httpException = new HttpException(responseCode, this.getResponseMessage());
             try {
                 httpException.setResult(IOUtil.readStr(this.getInputStream(), params.getCharset()));
@@ -241,7 +265,7 @@ public class HttpRequest extends UriRequest {
             cacheKey = params.getCacheKey();
 
             if (TextUtils.isEmpty(cacheKey)) {
-                cacheKey = queryUrl;
+                cacheKey = params.toString();
             }
         }
         return cacheKey;

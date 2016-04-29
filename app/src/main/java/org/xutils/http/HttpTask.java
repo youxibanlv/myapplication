@@ -1,18 +1,7 @@
 package org.xutils.http;
 
-import android.content.Intent;
-import android.os.SystemClock;
 import android.text.TextUtils;
 
-import com.cmcc.iot.gatwaycloud.LoginActivity;
-import com.cmcc.iot.gatwaycloud.R;
-import com.cmcc.iot.gatwaycloud.common.AppContext;
-import com.cmcc.iot.gatwaycloud.config.AppConfig;
-import com.cmcc.iot.gatwaycloud.http.optimize.ReqOptimize;
-import com.cmcc.iot.gatwaycloud.util.ErrorUtils;
-import com.cmcc.iot.gatwaycloud.util.UIUtils;
-
-import org.json.JSONObject;
 import org.xutils.common.Callback;
 import org.xutils.common.task.AbsTask;
 import org.xutils.common.task.Priority;
@@ -20,11 +9,8 @@ import org.xutils.common.task.PriorityExecutor;
 import org.xutils.common.util.IOUtil;
 import org.xutils.common.util.LogUtil;
 import org.xutils.common.util.ParameterizedTypeUtil;
-import org.xutils.config.XConfig;
-import org.xutils.ex.HttpAuthException;
 import org.xutils.ex.HttpException;
 import org.xutils.ex.HttpRedirectException;
-import org.xutils.http.SpecialAuth.AuthHeader;
 import org.xutils.http.app.HttpRetryHandler;
 import org.xutils.http.app.RedirectHandler;
 import org.xutils.http.app.RequestInterceptListener;
@@ -37,9 +23,9 @@ import java.io.Closeable;
 import java.io.File;
 import java.lang.ref.WeakReference;
 import java.lang.reflect.Type;
-import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.List;
+import java.util.Iterator;
+import java.util.Map;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -54,12 +40,13 @@ public class HttpTask<ResultType> extends AbsTask<ResultType> implements Progres
     private UriRequest request;
     private RequestWorker requestWorker;
     private final Executor executor;
+    private volatile boolean hasException = false;
     private final Callback.CommonCallback<ResultType> callback;
 
     // 缓存控制
     private Object rawResult = null;
-    private final Object cacheLock = new Object();
     private volatile Boolean trustCache = null;
+    private final Object cacheLock = new Object();
 
     // 扩展callback
     private Callback.CacheCallback<ResultType> cacheCallback;
@@ -79,10 +66,9 @@ public class HttpTask<ResultType> extends AbsTask<ResultType> implements Progres
     private static final HashMap<String, WeakReference<HttpTask<?>>>
             DOWNLOAD_TASK = new HashMap<String, WeakReference<HttpTask<?>>>(1);
 
-    private static final PriorityExecutor HTTP_EXECUTOR = new PriorityExecutor(AppConfig.DEFAULT_CORE_POOL_SIZE, true);
+    private static final PriorityExecutor HTTP_EXECUTOR = new PriorityExecutor(5, true);
     private static final PriorityExecutor CACHE_EXECUTOR = new PriorityExecutor(5, true);
 
-    public static HashMap<Throwable, String> errorMap = new HashMap<Throwable, String>();
 
     public HttpTask(RequestParams params, Callback.Cancelable cancelHandler,
                     Callback.CommonCallback<ResultType> callback) {
@@ -138,7 +124,7 @@ public class HttpTask<ResultType> extends AbsTask<ResultType> implements Progres
     private void resolveLoadType() {
         Class<?> callBackType = callback.getClass();
         if (callback instanceof Callback.TypedCallback) {
-            loadType = ((Callback.TypedCallback) callback).getResultType();
+            loadType = ((Callback.TypedCallback) callback).getLoadType();
         } else if (callback instanceof Callback.PrepareCallback) {
             loadType = ParameterizedTypeUtil.getParameterizedType(callBackType, Callback.PrepareCallback.class, 0);
         } else {
@@ -183,7 +169,19 @@ public class HttpTask<ResultType> extends AbsTask<ResultType> implements Progres
                     }
                     DOWNLOAD_TASK.put(downloadTaskKey, new WeakReference<HttpTask<?>>(this));
                 } // end if (!TextUtils.isEmpty(downloadTaskKey))
-            }
+
+                if (DOWNLOAD_TASK.size() > MAX_FILE_LOAD_WORKER) {
+                    Iterator<Map.Entry<String, WeakReference<HttpTask<?>>>>
+                            entryItr = DOWNLOAD_TASK.entrySet().iterator();
+                    while (entryItr.hasNext()) {
+                        Map.Entry<String, WeakReference<HttpTask<?>>> next = entryItr.next();
+                        WeakReference<HttpTask<?>> value = next.getValue();
+                        if (value == null || value.get() == null) {
+                            entryItr.remove();
+                        }
+                    }
+                }
+            } // end synchronized
         }
     }
 
@@ -256,6 +254,8 @@ public class HttpTask<ResultType> extends AbsTask<ResultType> implements Progres
                         synchronized (cacheLock) {
                             try {
                                 cacheLock.wait();
+                            } catch (InterruptedException iex) {
+                                throw new Callback.CancelledException("cancelled before request");
                             } catch (Throwable ignored) {
                             }
                         }
@@ -277,6 +277,13 @@ public class HttpTask<ResultType> extends AbsTask<ResultType> implements Progres
             this.request.clearCacheHeader();
         }
 
+        // 判断请求的缓存策略
+        if (callback instanceof Callback.ProxyCacheCallback) {
+            if (((Callback.ProxyCacheCallback) callback).onlyCache()) {
+                return null;
+            }
+        }
+
         // 发起请求
         retry = true;
         while (retry) {
@@ -295,12 +302,7 @@ public class HttpTask<ResultType> extends AbsTask<ResultType> implements Progres
                     // 开始请求工作
                     LogUtil.d("load: " + this.request.getRequestUri());
                     requestWorker = new RequestWorker();
-                    if (params.isCancelFast()) {
-                        requestWorker.start();
-                        requestWorker.join();
-                    } else {
-                        requestWorker.run();
-                    }
+                    requestWorker.request();
                     if (requestWorker.ex != null) {
                         throw requestWorker.ex;
                     }
@@ -341,20 +343,25 @@ public class HttpTask<ResultType> extends AbsTask<ResultType> implements Progres
                 retry = true;
                 LogUtil.w("Http Redirect:" + params.getUri());
             } catch (Throwable ex) {
-                if (this.request.getResponseCode() == 304) { // disk cache is valid.
-                    return null;
-                } else {
-                    exception = ex;
-                    if (this.isCancelled() && !(exception instanceof Callback.CancelledException)) {
-                        exception = new Callback.CancelledException("canceled by user");
+                switch (this.request.getResponseCode()) {
+                    case 204: // empty content
+                    case 205: // empty content
+                    case 304: // disk cache is valid.
+                        return null;
+                    default: {
+                        exception = ex;
+                        if (this.isCancelled() && !(exception instanceof Callback.CancelledException)) {
+                            exception = new Callback.CancelledException("canceled by user");
+                        }
+                        retry = retryHandler.canRetry(this.request, exception, ++retryCount);
                     }
-                    retry = retryHandler.retryRequest(exception, ++retryCount, this.request);
                 }
             }
 
         }
 
         if (exception != null && result == null && !trustCache) {
+            hasException = true;
             throw exception;
         }
 
@@ -385,9 +392,7 @@ public class HttpTask<ResultType> extends AbsTask<ResultType> implements Progres
                         trustCache = this.cacheCallback.onCache(result);
                     } catch (Throwable ex) {
                         trustCache = false;
-                        if (callback != null) {
-                            callback.onError(ex, true);
-                        }
+                        callback.onError(ex, true);
                     } finally {
                         cacheLock.notifyAll();
                     }
@@ -402,10 +407,7 @@ public class HttpTask<ResultType> extends AbsTask<ResultType> implements Progres
                                 ((Number) args[1]).longValue(),
                                 (Boolean) args[2]);
                     } catch (Throwable ex) {
-
-                        if (callback != null) {
-                            callback.onError(ex, true);
-                        }
+                        callback.onError(ex, true);
                     }
                 }
                 break;
@@ -436,44 +438,13 @@ public class HttpTask<ResultType> extends AbsTask<ResultType> implements Progres
         }
     }
 
-    public static long start = 0;
-
     @Override
     protected void onSuccess(ResultType result) {
+        if (hasException) return;
         if (tracker != null) {
             tracker.onSuccess(request, result);
         }
-        if (result != null && callback != null) {
-            try {
-                start = SystemClock.currentThreadTimeMillis();
-                String strResult=(String) result;
-                if(TextUtils.isEmpty(strResult)){
-                    UIUtils.showTipToast(false,AppContext.getContext().getResources().getString(R.string.system_error));
-                }
-                LogUtil.e(strResult);
-                LogUtil.e("onsuccess time =" + start);
-            } catch (Exception e) {
-
-            } finally {
-
-                String CmdType = request.getParams().getCmdType();
-                String GatewayMac = request.getParams().getGatewayMac();
-                if (!TextUtils.isEmpty(CmdType)) {
-                    synchronized (ReqOptimize.reqMap) {
-                        ArrayList<Callback.CommonCallback<String>> callbacks = ReqOptimize.reqMap.get(CmdType+GatewayMac);
-                        if (callbacks != null) {
-                            try {
-                                for (Callback.CommonCallback<String> tmpCallback : callbacks) {
-                                    tmpCallback.onSuccess((String)result);
-                                }
-                            }catch (Exception e){}
-                        }
-                    }
-                }else {
-                    callback.onSuccess(result);
-                }
-            }
-        }
+        callback.onSuccess(result);
     }
 
     @Override
@@ -481,25 +452,7 @@ public class HttpTask<ResultType> extends AbsTask<ResultType> implements Progres
         if (tracker != null) {
             tracker.onError(request, ex, isCallbackError);
         }
-
-        String CmdType = request.getParams().getCmdType();
-        String GatewayMac = request.getParams().getGatewayMac();
-        if (!TextUtils.isEmpty(CmdType)) {
-            synchronized (ReqOptimize.reqMap) {
-                ArrayList<Callback.CommonCallback<String>> callbacks = ReqOptimize.reqMap.get(CmdType+GatewayMac);
-                if (callbacks != null) {
-                    try {
-                        for (Callback.CommonCallback<String> tmpCallback : callbacks) {
-                            tmpCallback.onError(ex, isCallbackError);
-                        }
-                    }catch (Exception e){}
-                }
-            }
-        }else {
-            if (callback != null) {
-                callback.onError(ex, isCallbackError);
-            }
-        }
+        callback.onError(ex, isCallbackError);
     }
 
 
@@ -508,24 +461,7 @@ public class HttpTask<ResultType> extends AbsTask<ResultType> implements Progres
         if (tracker != null) {
             tracker.onCancelled(request);
         }
-        String CmdType = request.getParams().getCmdType();
-        String GatewayMac = request.getParams().getGatewayMac();
-        if (!TextUtils.isEmpty(CmdType)) {
-            synchronized (ReqOptimize.reqMap) {
-                ArrayList<Callback.CommonCallback<String>> callbacks = ReqOptimize.reqMap.get(CmdType+GatewayMac);
-                if (callbacks != null) {
-                    try {
-                        for (Callback.CommonCallback<String> tmpCallback : callbacks) {
-                            tmpCallback.onCancelled(cex);
-                        }
-                    }catch (Exception e){}
-                }
-            }
-        }else {
-            if (callback != null) {
-                callback.onCancelled(cex);
-            }
-        }
+        callback.onCancelled(cex);
     }
 
     @Override
@@ -533,56 +469,13 @@ public class HttpTask<ResultType> extends AbsTask<ResultType> implements Progres
         if (tracker != null) {
             tracker.onFinished(request);
         }
-
-        String CmdType = request.getParams().getCmdType();
-        String GatewayMac = request.getParams().getGatewayMac();
-        if (!TextUtils.isEmpty(CmdType)) {
-            synchronized (ReqOptimize.reqMap) {
-                ArrayList<Callback.CommonCallback<String>> callbacks = ReqOptimize.reqMap.get(CmdType+GatewayMac);
-                if (callbacks != null) {
-                    try {
-                        for (Callback.CommonCallback<String> tmpCallback : callbacks) {
-                            tmpCallback.onFinished();
-                        }
-                    }catch (Exception e){
-                        e.printStackTrace();
-                    }finally {
-                        callbacks.clear();
-                        ReqOptimize.reqMap.remove(CmdType);
-                    }
-                }
-            }
-        }else{
-            if (callback != null) {
-                callback.onFinished();
-            }
-        }
-        try {
-            String content = (String) this.getResult();
-            JSONObject jsonObj = new JSONObject(content);
-            if (jsonObj.has("Result")) {
-                int result = jsonObj.getInt("Result");
-                if ((result == -10002 || result == -1000)) {//无效的token需要重新登录
-                    //已在登录界面无需再跳到登录界面，也无需弹出token失效提示
-                    if (ErrorUtils.isJump2Login()) {
-                        Intent intent = new Intent(AppContext.getContext(), LoginActivity.class);
-                        intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK | Intent.FLAG_ACTIVITY_NEW_TASK);
-                        AppContext.getContext().startActivity(intent);
-                    }
-                }
-            }
-        } catch (Exception e) {
-        }
         x.task().run(new Runnable() {
             @Override
             public void run() {
                 closeRequestSync();
             }
         });
-
-//        if (callback != null) {
-//            callback.onFinished();
-//        }
+        callback.onFinished();
     }
 
     private void clearRawResult() {
@@ -609,13 +502,6 @@ public class HttpTask<ResultType> extends AbsTask<ResultType> implements Progres
 
     private void closeRequestSync() {
         clearRawResult();
-        if (requestWorker != null && params.isCancelFast()) {
-            try {
-                requestWorker.interrupt();
-            } catch (Throwable ignored) {
-            }
-        }
-        // wtf: okhttp close the inputStream be locked by BufferedInputStream#read
         IOUtil.closeQuietly(request);
     }
 
@@ -678,24 +564,26 @@ public class HttpTask<ResultType> extends AbsTask<ResultType> implements Progres
      * 该线程被join到HttpTask的工作线程去执行.
      * 它的主要作用是为了能强行中断请求的链接过程;
      * 并辅助限制同时下载文件的线程数.
-     * but:
-     * 创建一个Thread约耗时2毫秒, 优化?
      */
-    private final class RequestWorker extends Thread {
+    private final class RequestWorker {
         /*private*/ Object result;
         /*private*/ Throwable ex;
 
         private RequestWorker() {
         }
 
-        public void run() {
+        public void request() {
             try {
+                boolean interrupted = false;
                 if (File.class == loadType) {
                     while (sCurrFileLoadCount.get() >= MAX_FILE_LOAD_WORKER
                             && !HttpTask.this.isCancelled()) {
                         synchronized (sCurrFileLoadCount) {
                             try {
-                                sCurrFileLoadCount.wait(100);
+                                sCurrFileLoadCount.wait(10);
+                            } catch (InterruptedException iex) {
+                                interrupted = true;
+                                break;
                             } catch (Throwable ignored) {
                             }
                         }
@@ -703,24 +591,15 @@ public class HttpTask<ResultType> extends AbsTask<ResultType> implements Progres
                     sCurrFileLoadCount.incrementAndGet();
                 }
 
-                if (HttpTask.this.isCancelled()) {
-                    throw new Callback.CancelledException("cancelled before request");
-                }
-
-                // intercept response
-                if (requestInterceptListener != null) {
-                    requestInterceptListener.beforeRequest(request);
+                if (interrupted || HttpTask.this.isCancelled()) {
+                    throw new Callback.CancelledException("cancelled before request" + (interrupted ? "(interrupted)" : ""));
                 }
 
                 try {
+                    request.setRequestInterceptListener(requestInterceptListener);
                     this.result = request.loadResult();
                 } catch (Throwable ex) {
                     this.ex = ex;
-                }
-
-                // intercept response
-                if (requestInterceptListener != null) {
-                    requestInterceptListener.afterRequest(request);
                 }
 
                 if (this.ex != null) {
@@ -749,23 +628,6 @@ public class HttpTask<ResultType> extends AbsTask<ResultType> implements Progres
                                 this.ex = ex;
                             }
                         }
-                    }
-//                    //根据信邦提供的接口显示的，不使用用的和路由的鉴权方式的
-                    else if (errorCode == 401){
-                        String authData = HttpTask.this.request.getResponseHeader("WWW-Authenticate");
-                        AuthHeader authHeader = AuthHeader.getInstance();
-                        List<RequestParams.Header> mHeaders = HttpTask.this.params.getHeaders();
-                        for (RequestParams.Header header:mHeaders){
-                            if(!TextUtils.isEmpty(header.key)&&
-                                    header.key.equalsIgnoreCase(XConfig.MSG_SEQ)){
-                                authHeader.setNc(String.format("%08d", Integer.valueOf((String)header.value)));
-                            }
-                        }
-                        if(!TextUtils.isEmpty(authData)){
-                            authHeader.parserAuthenHeader(authData);
-                        }
-                        HttpTask.this.params.setHeader("Authorization",authHeader.toAuthHeader());
-                        this.ex = new HttpAuthException(errorCode, httpEx.getMessage(), httpEx.getResult());
                     }
                 }
             } finally {

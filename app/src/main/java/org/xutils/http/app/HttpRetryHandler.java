@@ -21,11 +21,11 @@ import java.util.HashSet;
  * Author: wyouflf
  * Time: 2014/05/30
  */
-public final class HttpRetryHandler {
+public class HttpRetryHandler {
 
     protected int maxRetryCount = 2;
 
-    private static HashSet<Class<?>> blackList = new HashSet<Class<?>>();
+    protected static HashSet<Class<?>> blackList = new HashSet<Class<?>>();
 
     static {
         blackList.add(HttpException.class);
@@ -49,24 +49,24 @@ public final class HttpRetryHandler {
         this.maxRetryCount = maxRetryCount;
     }
 
-    public boolean retryRequest(Throwable ex, int count, UriRequest request) {
+    public boolean canRetry(UriRequest request, Throwable ex, int count) {
 
         LogUtil.w(ex.getMessage(), ex);
 
-        if (count > maxRetryCount || request == null) {
+        if (count > maxRetryCount) {
+            LogUtil.w(request.toString());
             LogUtil.w("The Max Retry times has been reached!");
             return false;
         }
 
-        /**
-         * 让post请求也能retry
-         */
-//        if (!HttpMethod.permitsRetry(request.getParams().getMethod())) {
-//            LogUtil.w("The Request Method can not be retried.");
-//            return false;
-//        }
+        if (!HttpMethod.permitsRetry(request.getParams().getMethod())) {
+            LogUtil.w(request.toString());
+            LogUtil.w("The Request Method can not be retried.");
+            return false;
+        }
 
         if (blackList.contains(ex.getClass())) {
+            LogUtil.w(request.toString());
             LogUtil.w("The Exception can not be retried.");
             return false;
         }

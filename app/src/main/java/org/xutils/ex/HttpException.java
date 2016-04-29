@@ -21,6 +21,7 @@ public class HttpException extends BaseException {
     private static final long serialVersionUID = 1L;
 
     private int code;
+    private String errorCode;
     private String customMessage;
     private String result;
 
@@ -48,6 +49,14 @@ public class HttpException extends BaseException {
         return code;
     }
 
+    public String getErrorCode() {
+        return errorCode == null ? String.valueOf(code) : errorCode;
+    }
+
+    public void setErrorCode(String errorCode) {
+        this.errorCode = errorCode;
+    }
+
     @Override
     public String getMessage() {
         if (!TextUtils.isEmpty(customMessage)) {
@@ -67,6 +76,6 @@ public class HttpException extends BaseException {
 
     @Override
     public String toString() {
-        return "code: " + code + ", msg: " + getMessage() + ", result: " + result;
+        return "errorCode: " + getErrorCode() + ", msg: " + getMessage() + ", result: " + result;
     }
 }

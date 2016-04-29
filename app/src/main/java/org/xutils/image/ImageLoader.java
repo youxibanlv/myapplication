@@ -19,7 +19,6 @@ import org.xutils.common.task.Priority;
 import org.xutils.common.task.PriorityExecutor;
 import org.xutils.common.util.IOUtil;
 import org.xutils.common.util.LogUtil;
-import org.xutils.config.XConfig;
 import org.xutils.ex.FileLockedException;
 import org.xutils.http.RequestParams;
 import org.xutils.x;
@@ -27,6 +26,7 @@ import org.xutils.x;
 import java.io.File;
 import java.io.IOException;
 import java.lang.ref.WeakReference;
+import java.lang.reflect.Type;
 import java.util.HashMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicLong;
@@ -39,6 +39,7 @@ import java.util.concurrent.atomic.AtomicLong;
         Callback.PrepareCallback<File, Drawable>,
         Callback.CacheCallback<Drawable>,
         Callback.ProgressCallback<Drawable>,
+        Callback.TypedCallback<Drawable>,
         Callback.Cancelable {
 
     private MemCacheKey key;
@@ -56,7 +57,7 @@ import java.util.concurrent.atomic.AtomicLong;
     private Callback.CacheCallback<Drawable> cacheCallback;
     private Callback.ProgressCallback<Drawable> progressCallback;
 
-    private final static String DISK_CACHE_DIR_NAME = XConfig.IMG_CACHE_DIR;//"xUtils_img";
+    private final static String DISK_CACHE_DIR_NAME = "xUtils_img";
     private final static Executor EXECUTOR = new PriorityExecutor(10, false);
     private final static int MEM_CACHE_MIN_SIZE = 1024 * 1024 * 4; // 4M
     private final static LruCache<MemCacheKey, Drawable> MEM_CACHE =
@@ -131,7 +132,7 @@ import java.util.concurrent.atomic.AtomicLong;
                                      final ImageOptions options,
                                      final Callback.CommonCallback<Drawable> callback) {
         if (TextUtils.isEmpty(url)) {
-            postBindArgsException(null, options, "url is null", callback);
+            postArgsException(null, options, "url is null", callback);
             return null;
         }
 
@@ -155,24 +156,13 @@ import java.util.concurrent.atomic.AtomicLong;
     /*package*/
     static Cancelable doLoadFile(final String url,
                                  final ImageOptions options,
-                                 final Callback.CommonCallback<File> callback) {
+                                 final Callback.CacheCallback<File> callback) {
         if (TextUtils.isEmpty(url)) {
-            postBindArgsException(null, options, "url is null", callback);
+            postArgsException(null, options, "url is null", callback);
             return null;
         }
 
-        RequestParams params = new RequestParams(url);
-        params.setCacheDirName(DISK_CACHE_DIR_NAME);
-        params.setConnectTimeout(1000 * 8);
-        params.setPriority(Priority.BG_LOW);
-        params.setExecutor(EXECUTOR);
-        params.setUseCookie(false);
-        if (options != null) {
-            ImageOptions.ParamsBuilder paramsBuilder = options.getParamsBuilder();
-            if (paramsBuilder != null) {
-                params = paramsBuilder.buildParams(params, options);
-            }
-        }
+        RequestParams params = createRequestParams(url, options);
         return x.http().get(params, callback);
     }
 
@@ -194,12 +184,12 @@ import java.util.concurrent.atomic.AtomicLong;
         ImageOptions localOptions = options;
         {
             if (view == null) {
-                postBindArgsException(null, localOptions, "view is null", callback);
+                postArgsException(null, localOptions, "view is null", callback);
                 return null;
             }
 
             if (TextUtils.isEmpty(url)) {
-                postBindArgsException(view, localOptions, "url is null", callback);
+                postArgsException(view, localOptions, "url is null", callback);
                 return null;
             }
 
@@ -321,17 +311,7 @@ import java.util.concurrent.atomic.AtomicLong;
         }
 
         // request
-        RequestParams params = new RequestParams(url);
-        params.setCacheDirName(DISK_CACHE_DIR_NAME);
-        params.setConnectTimeout(1000 * 8);
-        params.setPriority(Priority.BG_LOW);
-        params.setExecutor(EXECUTOR);
-        params.setCancelFast(true);
-        params.setUseCookie(false);
-        ImageOptions.ParamsBuilder paramsBuilder = options.getParamsBuilder();
-        if (paramsBuilder != null) {
-            params = paramsBuilder.buildParams(params, options);
-        }
+        RequestParams params = createRequestParams(url, options);
         if (view instanceof FakeImageView) {
             synchronized (FAKE_IMG_MAP) {
                 FAKE_IMG_MAP.put(url, (FakeImageView) view);
@@ -373,6 +353,13 @@ import java.util.concurrent.atomic.AtomicLong;
         if (validView4Callback(true) && progressCallback != null) {
             progressCallback.onLoading(total, current, isDownloading);
         }
+    }
+
+    private static final Type loadType = File.class;
+
+    @Override
+    public Type getLoadType() {
+        return loadType;
     }
 
     @Override
@@ -441,7 +428,12 @@ import java.util.concurrent.atomic.AtomicLong;
 
         if (ex instanceof FileLockedException) {
             LogUtil.d("ImageFileLocked: " + key.url);
-            doBind(viewRef.get(), key.url, options, callback);
+            x.task().postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    doBind(viewRef.get(), key.url, options, callback);
+                }
+            }, 10);
             return;
         }
 
@@ -479,6 +471,23 @@ import java.util.concurrent.atomic.AtomicLong;
         }
     }
 
+    private static RequestParams createRequestParams(String url, ImageOptions options) {
+        RequestParams params = new RequestParams(url);
+        params.setCacheDirName(DISK_CACHE_DIR_NAME);
+        params.setConnectTimeout(1000 * 8);
+        params.setPriority(Priority.BG_LOW);
+        params.setExecutor(EXECUTOR);
+        params.setCancelFast(true);
+        params.setUseCookie(false);
+        if (options != null) {
+            ImageOptions.ParamsBuilder paramsBuilder = options.getParamsBuilder();
+            if (paramsBuilder != null) {
+                params = paramsBuilder.buildParams(params, options);
+            }
+        }
+        return params;
+    }
+
     private boolean validView4Callback(boolean forceValidAsyncDrawable) {
         final ImageView view = viewRef.get();
         if (view != null) {
@@ -512,7 +521,7 @@ import java.util.concurrent.atomic.AtomicLong;
         return false;
     }
 
-    private synchronized void setSuccessDrawable4Callback(final Drawable drawable) {
+    private void setSuccessDrawable4Callback(final Drawable drawable) {
         final ImageView view = viewRef.get();
         if (view != null) {
             view.setScaleType(options.getImageScaleType());
@@ -532,7 +541,7 @@ import java.util.concurrent.atomic.AtomicLong;
         }
     }
 
-    private synchronized void setErrorDrawable4Callback() {
+    private void setErrorDrawable4Callback() {
         final ImageView view = viewRef.get();
         if (view != null) {
             Drawable drawable = options.getFailureDrawable(view);
@@ -541,7 +550,7 @@ import java.util.concurrent.atomic.AtomicLong;
         }
     }
 
-    private static void postBindArgsException(
+    private static void postArgsException(
             final ImageView view, final ImageOptions options,
             final String exMsg, final Callback.CommonCallback<?> callback) {
         x.task().autoPost(new Runnable() {

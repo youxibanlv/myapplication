@@ -32,7 +32,6 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public final class SqlInfoBuilder {
 
-
     private static final ConcurrentHashMap<TableEntity<?>, String> INSERT_SQL_CACHE = new ConcurrentHashMap<TableEntity<?>, String>();
     private static final ConcurrentHashMap<TableEntity<?>, String> REPLACE_SQL_CACHE = new ConcurrentHashMap<TableEntity<?>, String>();
 
@@ -255,9 +254,8 @@ public final class SqlInfoBuilder {
 
     public static List<KeyValue> entity2KeyValueList(TableEntity<?> table, Object entity) {
 
-        List<KeyValue> keyValueList = new ArrayList<KeyValue>();
-
         Collection<ColumnEntity> columns = table.getColumnMap().values();
+        List<KeyValue> keyValueList = new ArrayList<KeyValue>(columns.size());
         for (ColumnEntity column : columns) {
             KeyValue kv = column2KeyValue(entity, column);
             if (kv != null) {

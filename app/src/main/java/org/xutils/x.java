@@ -76,9 +76,6 @@ public final class x {
         return DbManagerImpl.getInstance(daoConfig);
     }
 
-    public static DbManager getAppDb(DbManager.DaoConfig daoConfig) {
-        return DbManagerImpl.getInstance(daoConfig);
-    }
     public static class Ext {
         private static boolean debug;
         private static Application app;

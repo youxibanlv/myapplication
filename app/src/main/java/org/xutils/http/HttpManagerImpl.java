@@ -1,10 +1,5 @@
 package org.xutils.http;
 
-import com.cmcc.iot.gatwaycloud.R;
-import com.cmcc.iot.gatwaycloud.ex.NoInternetThrowable;
-import com.cmcc.iot.gatwaycloud.netstate.NetState;
-import com.cmcc.iot.gatwaycloud.util.UIUtils;
-
 import org.xutils.HttpManager;
 import org.xutils.common.Callback;
 import org.xutils.x;
@@ -18,7 +13,7 @@ import java.lang.reflect.Type;
 public final class HttpManagerImpl implements HttpManager {
 
     private static final Object lock = new Object();
-    private static HttpManagerImpl instance;
+    private static volatile HttpManagerImpl instance;
 
     private HttpManagerImpl() {
     }
@@ -46,15 +41,6 @@ public final class HttpManagerImpl implements HttpManager {
 
     @Override
     public <T> Callback.Cancelable request(HttpMethod method, RequestParams entity, Callback.CommonCallback<T> callback) {
-        if (NetState.getWorkNet()==NetState.NO_NETWORK){
-            UIUtils.showTipToast(false,UIUtils.getString(R.string.network_invalid));
-            if (callback!=null){
-                NoInternetThrowable noInternetThrowable = new NoInternetThrowable(UIUtils.getString(R.string.network_invalid));
-                callback.onError(noInternetThrowable,false);
-                callback.onFinished();
-            }
-            return null;
-        }
         entity.setMethod(method);
         Callback.Cancelable cancelable = null;
         if (callback instanceof Callback.Cancelable) {
@@ -96,7 +82,7 @@ public final class HttpManagerImpl implements HttpManager {
         }
 
         @Override
-        public Type getResultType() {
+        public Type getLoadType() {
             return resultType;
         }
 

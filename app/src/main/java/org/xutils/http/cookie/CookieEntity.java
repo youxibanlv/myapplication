@@ -83,7 +83,11 @@ import java.net.URI;
         cookie.setCommentURL(commentURL);
         cookie.setDiscard(discard);
         cookie.setDomain(domain);
-        cookie.setMaxAge((expiry - System.currentTimeMillis()) / 1000L);
+        if (expiry == -1L) {
+            cookie.setMaxAge(-1L);
+        } else {
+            cookie.setMaxAge((expiry - System.currentTimeMillis()) / 1000L);
+        }
         cookie.setPath(path);
         cookie.setPortlist(portList);
         cookie.setSecure(secure);
@@ -105,5 +109,9 @@ import java.net.URI;
 
     public void setUri(String uri) {
         this.uri = uri;
+    }
+
+    public boolean isExpired() {
+        return expiry != -1L && expiry < System.currentTimeMillis();
     }
 }

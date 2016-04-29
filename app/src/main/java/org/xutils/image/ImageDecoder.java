@@ -20,7 +20,6 @@ import org.xutils.common.Callback;
 import org.xutils.common.task.PriorityExecutor;
 import org.xutils.common.util.IOUtil;
 import org.xutils.common.util.LogUtil;
-import org.xutils.config.XConfig;
 import org.xutils.x;
 
 import java.io.BufferedInputStream;
@@ -49,7 +48,7 @@ public final class ImageDecoder {
     private final static byte[] WEBP_HEADER = new byte[]{'W', 'E', 'B', 'P'};
 
     private final static Executor THUMB_CACHE_EXECUTOR = new PriorityExecutor(1, true);
-    private final static LruDiskCache THUMB_CACHE = LruDiskCache.getDiskCache(XConfig.IMG_THUMB_CACHE_DIR);//"xUtils_img_thumb");
+    private final static LruDiskCache THUMB_CACHE = LruDiskCache.getDiskCache("xUtils_img_thumb");
 
     static {
         int cpuCount = Runtime.getRuntime().availableProcessors();
@@ -100,6 +99,8 @@ public final class ImageDecoder {
                         synchronized (bitmapDecodeLock) {
                             try {
                                 bitmapDecodeLock.wait();
+                            } catch (InterruptedException iex) {
+                                throw new Callback.CancelledException("cancelled during decode image");
                             } catch (Throwable ignored) {
                             }
                         }

@@ -18,7 +18,7 @@ public final class TaskControllerImpl implements TaskController {
     private TaskControllerImpl() {
     }
 
-    private static TaskController instance;
+    private static volatile TaskController instance;
 
     public static void registerInstance() {
         if (instance == null) {
@@ -222,6 +222,11 @@ public final class TaskControllerImpl implements TaskController {
         }
     }
 
+    /**
+     * 移除post或postDelayed提交的, 未执行的runnable
+     *
+     * @param runnable
+     */
     @Override
     public void removeCallbacks(Runnable runnable) {
         TaskProxy.sHandler.removeCallbacks(runnable);

@@ -90,6 +90,16 @@ public interface DbManager extends Closeable {
     ///////////// table
 
     /**
+     * 获取表信息
+     *
+     * @param entityType
+     * @param <T>
+     * @return
+     * @throws DbException
+     */
+    <T> TableEntity<T> getTable(Class<T> entityType) throws DbException;
+
+    /**
      * 删除表
      *
      * @param entityType
@@ -137,12 +147,16 @@ public interface DbManager extends Closeable {
 
     Cursor execQuery(String sql) throws DbException;
 
+    public interface DbOpenListener {
+        void onDbOpened(DbManager db);
+    }
+
     public interface DbUpgradeListener {
-        public void onUpgrade(DbManager db, int oldVersion, int newVersion);
+        void onUpgrade(DbManager db, int oldVersion, int newVersion);
     }
 
     public interface TableCreateListener {
-        public void onTableCreated(DbManager db, TableEntity<?> table);
+        void onTableCreated(DbManager db, TableEntity<?> table);
     }
 
     public static class DaoConfig {
@@ -152,6 +166,7 @@ public interface DbManager extends Closeable {
         private boolean allowTransaction = true;
         private DbUpgradeListener dbUpgradeListener;
         private TableCreateListener tableCreateListener;
+        private DbOpenListener dbOpenListener;
 
         public DaoConfig() {
         }
@@ -175,6 +190,11 @@ public interface DbManager extends Closeable {
 
         public DaoConfig setAllowTransaction(boolean allowTransaction) {
             this.allowTransaction = allowTransaction;
+            return this;
+        }
+
+        public DaoConfig setDbOpenListener(DbOpenListener dbOpenListener) {
+            this.dbOpenListener = dbOpenListener;
             return this;
         }
 
@@ -202,6 +222,10 @@ public interface DbManager extends Closeable {
 
         public boolean isAllowTransaction() {
             return allowTransaction;
+        }
+
+        public DbOpenListener getDbOpenListener() {
+            return dbOpenListener;
         }
 
         public DbUpgradeListener getDbUpgradeListener() {

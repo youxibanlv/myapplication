@@ -15,18 +15,12 @@ public class StringBody implements RequestBody {
     private byte[] content;
     private String contentType;
     private String charset = "UTF-8";
-    private String req="";
 
     public StringBody(String str, String charset) throws UnsupportedEncodingException {
         if (!TextUtils.isEmpty(charset)) {
             this.charset = charset;
         }
-        req = str;
         this.content = str.getBytes(this.charset);
-    }
-
-    public String getReq() {
-        return req;
     }
 
     @Override

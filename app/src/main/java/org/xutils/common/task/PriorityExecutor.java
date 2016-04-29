@@ -1,7 +1,5 @@
 package org.xutils.common.task;
 
-import com.cmcc.iot.gatwaycloud.config.AppConfig;
-
 import java.util.Comparator;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.Executor;
@@ -18,7 +16,7 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 public class PriorityExecutor implements Executor {
 
-    private static final int CORE_POOL_SIZE = AppConfig.DEFAULT_CORE_POOL_SIZE;//40;
+    private static final int CORE_POOL_SIZE = 5;
     private static final int MAXIMUM_POOL_SIZE = 256;
     private static final int KEEP_ALIVE = 1;
     private static final AtomicLong SEQ_SEED = new AtomicLong(0);
